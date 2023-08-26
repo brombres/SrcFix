@@ -1,0 +1,467 @@
+#================================================================================
+# SrcFix.rogue
+# August 26, 2023
+#================================================================================
+
+$define VERSION "1.0"
+$define DATE    "August 26, 2023"
+
+$requireRogue "2.28"
+
+uses Console/CommandLineParser
+uses Introspection
+uses Utility/FilePatcher
+uses Utility/TextDocFormatter
+
+try
+  SrcFix.init( System.command_line_arguments )
+catch (error:Error)
+  Console.error.println error
+  System.exit 1
+endTry
+
+class SrcFix [singleton]
+  PROPERTIES
+    command    : Value
+    directives = Directive[]
+
+    patcher    : FilePatcher
+    first_line : Int32
+    last_line  : Int32
+
+    previous_search : Directive
+
+  METHODS
+    method init( args:String[] )
+      command = parse_args( args )
+
+      if (command//options//help or command//args.is_empty)
+        print_usage
+        System.exit 0
+      endIf
+
+      # Ensure all target files exist before proceeding.
+      forEach (filepath in command//args)
+        local file = File( filepath->String )
+        local errors = false
+        if (not file.exists)
+          error.println "[SrcFix] No such file: " + file
+          errors = true
+        endIf
+        if (errors) return
+      endForEach
+
+      if (command//options//file)
+        local file = File( command//options//file->String )
+        if (not file.exists) throw Error( "No such file: " + file )
+        parse_directives( String(file) )
+      else
+        local info =
+          @|================================================================================
+           |Enter search-and-replace directives, each followed by arbitrary lines of text:
+           |  SEARCH:  [after]   [before]  [search]
+           |  REPLACE: [append]  [delete]  [insert]  [replace]
+           |
+           |Enter directives and text lines below. CTRL+D to end. ('srcfix --help' for help)
+           |================================================================================
+
+       println info
+
+       local content = String()
+       while (Console.has_another)
+         content.println( Console.read_line )
+       endWhile
+       Console.reset_input  # after CTRL+D
+
+       println @|================================================================================
+       parse_directives( content )
+      endIf
+
+      apply_directives
+
+    method apply_directives
+      forEach (filepath in command//args)
+        local file = File( filepath->String )
+        println file
+        patcher = FilePatcher( file )
+        first_line = 0
+        last_line = patcher.lines.count - 1
+        previous_search = null
+        contingent
+          necessary ((forEach in directives).apply)
+        satisfied
+          patcher.save
+        endContingent
+      endForEach
+
+    method parse_directives( src:String )
+      local cur_directive = ""
+      local lines = String[]
+      forEach (line in LineReader(src))
+        if (begins_with_directive(line))
+          if (cur_directive != "")
+            add_directive( cur_directive, lines )
+            lines = String[]
+          endIf
+          cur_directive = line.up_to_first(']')
+          line .= after_first(']').trimmed
+          if (line.count) lines.add( line )
+        else
+          lines.add( line )
+        endIf
+      endForEach
+
+      if (cur_directive != "") add_directive( cur_directive, lines )
+
+    method add_directive( name:String, lines:String[] )
+      which (name)
+        case "[delete all]": name = "[deleteAll]"
+        case "[replace all]": name = "[replaceAll]"
+      endWhich
+      local type = TypeInfo[ name.unleft(1).unright(1).capitalized+"Directive" ]
+      directives.add( type.create_object<<Directive>>.[ init(name,lines) ] )
+
+    method begins_with_directive( line:String )->Logical
+      if (not line.begins_with('[')) return false
+      if (line.begins_with("[after]")) return true
+      if (line.begins_with("[before]")) return true
+      if (line.begins_with("[search]")) return true
+      if (line.begins_with("[append]")) return true
+      if (line.begins_with("[delete]")) return true
+      if (line.begins_with("[delete all]")) return true
+      if (line.begins_with("[insert]")) return true
+      if (line.begins_with("[replace]")) return true
+      if (line.begins_with("[replace all]")) return true
+      return false
+
+    method parse_args( args:String[] )->Value
+      local command = CommandLineParser().
+      [
+        option( "--file=", &alias="-f" )
+        option( "--help",  &aliases=["-h","-?"] )
+      ].parse( args )
+      return command
+
+    method print_usage
+      println "SrcFix v$"(VERSION)
+      println "$ by Brom Bresenham"(DATE)
+      println
+
+      local text =
+        @|USAGE
+         |  srcfix [OPTIONS] [FILEPATHS]
+         |
+         |OPTIONS
+         |  --file=<filepath>, -f <filepath>
+         |    Read search-and-replace directives from the specified fix file instead of
+         |    reading them interactively.
+         |
+         |  --help, -h, -?
+         |    Show this help text.
+         |
+         |DIRECTIVES
+         |  The following search-and-replace directives are used by SrcFix. Each can be
+         |  followed by any number of lines of arbitrary text. These directives will be
+         |  applied in order to each file specified on the command line.
+         |
+         |  SEARCH DIRECTIVES
+         |    The search-and-replace window begins covering the entire file's content. The
+         |    following directives refine the window. [after] and [before] can be used
+         |    multiple times with cumulative effect. The search window is reset to cover full
+         |    file content after each modification directive.
+         |
+         |    [after]
+         |      Move the start of the search-and-replace window to be just after the lines
+         |      following the [after] directive.
+         |
+         |    [before]
+         |      Move the end of the search-and-replace window to be just before the lines
+         |     following the [before] directive.
+         |
+         |    [search]
+         |      Narrows the search-and-replace window to enclose the first occurrence of the
+         |      lines that follow the [search] directive.
+         |
+         |  MODIFICATION DIRECTIVES
+         |    [append]
+         |      Appends the lines that follow the [append] directive to the end of the
+         |      current search-and-replace window.
+         |
+         |    [delete], [delete all]
+         |      [delete] deletes all lines within the current search-and-replace window.
+         |      [delete all] continues to repeat the previous [search]
+         |      and delete the matching lines as long as the [search] continues to succeed.
+         |
+         |    [insert]
+         |      Inserts the lines that follow the [insert] directive at the beginning of
+         |      the current search-and-replace window.
+         |
+         |    [replace], [replace all]
+         |      [replace] replaces the contents of the current search-and-replace window with the
+         |      lines that follow the [replace] directive. [replace all] continues to
+         |      repeat the previous [search] and replace the matching lines as long as the [search]
+         |      continues to succeed.
+         |
+         |NOTES
+         |  Indentation is ignored while searching but preserved when replacing or inserting.
+    println TextDocFormatter().format( text )
+endClass
+
+class Directive [essential abstract]
+  PROPERTIES
+    name  : String
+    lines = String[]
+
+  METHODS
+    method init( name, lines )
+      # trim empty lines and whitespace off the ends of other lines
+      forEach (line at i in lines)
+        while (line.count and " \n".contains(line.last)) line .= unright(1)
+        lines[i] = line
+      endForEach
+      while (lines.count and lines.last == "") lines.remove_last
+      while (lines.count and lines.first == "") lines.remove_first
+
+      if (require_empty)
+        if (not lines.is_empty)
+          error.println "[SrcFix] Invalid content after $ directive."(name)
+          System.exit(1)
+        endIf
+      else
+        if (lines.is_empty)
+          error.println "[SrcFix] Content expected after $ directive."(name)
+          System.exit(1)
+        endIf
+      endIf
+
+    method apply( &quiet )->Logical [abstract]
+
+    method format( line:String )->String
+      line .= trimmed
+      if (line.count <= 70) return line
+      return line.substring(0,67) + "..."
+
+    method locate->Int32?
+      local i1 = SrcFix.first_line
+      local i2 = (SrcFix.last_line - lines.count) + 1
+      forEach (i in i1..i2)
+        if (match_lines_at(i)) return i
+      endForEach
+      return null
+
+    method match_lines_at( index:Int32 )->Logical
+      if (index < 0) return false
+      local limit = index + lines.count
+      if (limit > SrcFix.patcher.lines.count) return false
+
+      forEach (line at i in lines)
+        local a = SrcFix.patcher.lines[index+i]
+        local b = lines[i]
+        if (a != b and not a.contains(b)) return false
+      endForEach
+
+      forEach (line at i in lines)
+        local a = SrcFix.patcher.lines[index+i].trimmed
+        local b = lines[i].trimmed
+        if (a != b) return false
+      endForEach
+
+      return true
+
+    method reset
+      SrcFix.first_line = 0
+      SrcFix.last_line = SrcFix.patcher.lines.count - 1
+
+    method to->String
+      which (lines.count)
+        case 0: return name
+        case 1: return "$ $"(name,format(lines.first))
+        others: return "$ $..."(name,format(lines.first))
+      endWhich
+
+    method require_empty->Logical
+      return false
+endClass
+
+class AfterDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+
+      local i1 = locate
+      if (i1)
+        SrcFix.first_line = i1.value + 1
+        return true
+      else
+        return false
+      endIf
+endClass
+
+class AppendDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+      local base_indent = ""
+      if (SrcFix.patcher.lines.count)
+        local old_line = SrcFix.patcher.lines[ SrcFix.last_line ]
+        local n = 0
+        forEach (ch in old_line)
+          if (ch == ' ' or ch == '\t') ++n
+          else                         escapeForEach
+        endForEach
+        base_indent = old_line.substring(0,n)
+      endIf
+
+      forEach (line in lines)
+        SrcFix.patcher.lines.insert( base_indent+line, SrcFix.last_line )
+        SrcFix.patcher.is_modified = true
+        ++SrcFix.last_line
+      endForEach
+
+      reset
+
+      return true
+endClass
+
+class BeforeDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+
+      local i1 = locate
+      if (i1)
+        SrcFix.last_line = (i1.value + lines.count) - 1
+        return true
+      else
+        return false
+      endIf
+endClass
+
+class DeleteDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+
+      local i1 = SrcFix.first_line
+      forEach (i in i1..SrcFix.last_line)
+        SrcFix.patcher.delete(i1)
+      endForEach
+
+      reset
+
+      return true
+
+    method require_empty->Logical
+      return true
+endClass
+
+class DeleteAllDirective : DeleteDirective [essential]
+  METHODS
+    method init( name:String, lines:String[] )
+      prior.init( "[delete all]", lines )
+
+    method apply( &quiet )->Logical
+      prior.apply( &=quiet )
+
+      while (SrcFix.previous_search and SrcFix.previous_search.apply( &quiet ))
+        prior.apply( &quiet )
+      endWhile
+      SrcFix.previous_search = null
+
+      return true
+endClass
+
+class InsertDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+
+      local base_indent = ""
+      if (SrcFix.patcher.lines.count)
+        local old_line = SrcFix.patcher.lines[ (SrcFix.first_line-1).clamped_low(0) ]
+        local n = 0
+        forEach (ch in old_line)
+          if (ch == ' ' or ch == '\t') ++n
+          else                         escapeForEach
+        endForEach
+        base_indent = old_line.substring(0,n)
+      endIf
+
+      forEach (line in lines)
+        SrcFix.patcher.lines.insert( base_indent+line, SrcFix.first_line )
+        SrcFix.patcher.is_modified = true
+        ++SrcFix.first_line
+      endForEach
+
+      reset
+
+      return true
+endClass
+
+class ReplaceDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+
+      local old_line = SrcFix.patcher.lines[ SrcFix.first_line ]
+      local n = 0
+      forEach (ch in old_line)
+        if (ch == ' ' or ch == '\t') ++n
+        else                         escapeForEach
+      endForEach
+      local base_indent = old_line.substring(0,n)
+
+      local i1 = SrcFix.first_line
+      forEach (i in i1..SrcFix.last_line)
+        SrcFix.patcher.delete(i1)
+      endForEach
+
+      forEach (line in lines)
+        SrcFix.patcher.lines.insert( base_indent+line, SrcFix.first_line )
+        ++SrcFix.first_line
+      endForEach
+
+      reset
+
+      return true
+endClass
+
+class ReplaceAllDirective : ReplaceDirective [essential]
+  METHODS
+    method init( name:String, lines:String[] )
+      prior.init( "[replace all]", lines )
+
+    method apply( &quiet )->Logical
+      prior.apply( &=quiet )
+
+      while (SrcFix.previous_search and SrcFix.previous_search.apply( &quiet ))
+        prior.apply( &quiet )
+      endWhile
+      SrcFix.previous_search = null
+
+      prior.reset
+
+      return true
+
+    method reset
+      # Don't reset min_line
+      SrcFix.last_line = SrcFix.patcher.lines.count - 1
+endClass
+
+class SearchDirective : Directive [essential]
+  METHODS
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+      SrcFix.previous_search = this
+
+      local i1 = locate
+      if (i1)
+        SrcFix.first_line = i1.value
+        SrcFix.last_line = (i1.value + lines.count) - 1
+        return true
+      endIf
+
+      return false
+
+endClass
+
