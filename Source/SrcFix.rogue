@@ -149,12 +149,12 @@ class SrcFix [singleton]
 
       local text =
         @|USAGE
-         |  srcfix [OPTIONS]
+         |  srcfix [OPTIONS] [FILEPATHS]
          |
          |OPTIONS
          |  --file=<filepath>, -f <filepath>
-         |    Read search-and-replace directives from the specified file instead of
-         |    interactively.
+         |    Read search-and-replace directives from the specified fix file instead of
+         |    reading them interactively.
          |
          |  --help, -h, -?
          |    Show this help text.
@@ -183,18 +183,14 @@ class SrcFix [singleton]
          |      lines that follow the [search] directive.
          |
          |  MODIFICATION DIRECTIVES
-         |    [all]
-         |      Repeats all previous directives until there are no more changes. Only works
-         |      with
-         |
          |    [append]
          |      Appends the lines that follow the [append] directive to the end of the
          |      current search-and-replace window.
          |
          |    [delete], [delete all]
          |      [delete] deletes all lines within the current search-and-replace window.
-         |      [delete all] deletes and then repeats the previous [search] with another
-         |      delete as long as the [search] succeeds.
+         |      [delete all] continues to repeat the previous [search]
+         |      and delete the matching lines as long as the [search] continues to succeed.
          |
          |    [insert]
          |      Inserts the lines that follow the [insert] directive at the beginning of
@@ -202,9 +198,12 @@ class SrcFix [singleton]
          |
          |    [replace], [replace all]
          |      [replace] replaces the contents of the current search-and-replace window with the
-         |      lines that follow the [replace] directive. [replace all]
-         |      repeats the previous [search] paired with a [replace] as long as the [search]
-         |      succeeds.
+         |      lines that follow the [replace] directive. [replace all] continues to
+         |      repeat the previous [search] and replace the matching lines as long as the [search]
+         |      continues to succeed.
+         |
+         |NOTES
+         |  Indentation is ignored while searching but preserved when replacing or inserting.
     println TextDocFormatter().format( text )
 endClass
 
@@ -440,7 +439,13 @@ class ReplaceAllDirective : ReplaceDirective [essential]
       endWhile
       SrcFix.previous_search = null
 
+      prior.reset
+
       return true
+
+    method reset
+      # Don't reset min_line
+      SrcFix.last_line = SrcFix.patcher.lines.count - 1
 endClass
 
 class SearchDirective : Directive [essential]
