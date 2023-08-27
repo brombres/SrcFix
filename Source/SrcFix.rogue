@@ -11,6 +11,7 @@ $requireRogue "2.28"
 uses Console/CommandLineParser
 uses Introspection
 uses Utility/FilePatcher
+uses Utility/TextDocFormatter
 
 try
   SrcFix.init( System.command_line_arguments )
@@ -27,6 +28,8 @@ class SrcFix [singleton]
     patcher    : FilePatcher
     first_line : Int32
     last_line  : Int32
+
+    previous_search : Directive
 
   METHODS
     method init( args:String[] )
@@ -56,19 +59,21 @@ class SrcFix [singleton]
         local info =
           @|================================================================================
            |Enter search-and-replace directives, each followed by arbitrary lines of text:
-           |  SEARCH:  [after]   [before]  [reset]   [search]
+           |  SEARCH:  [after]   [before]  [search]
            |  REPLACE: [append]  [delete]  [insert]  [replace]
            |
            |Enter directives and text lines below. CTRL+D to end. ('srcfix --help' for help)
            |================================================================================
 
        println info
+
        local content = String()
        while (Console.has_another)
          content.println( Console.read_line )
        endWhile
        Console.reset_input  # after CTRL+D
 
+       println @|================================================================================
        parse_directives( content )
       endIf
 
@@ -77,10 +82,11 @@ class SrcFix [singleton]
     method apply_directives
       forEach (filepath in command//args)
         local file = File( filepath->String )
-        println "> " + file
+        println file
         patcher = FilePatcher( file )
         first_line = 0
         last_line = patcher.lines.count - 1
+        previous_search = null
         contingent
           necessary ((forEach in directives).apply)
         satisfied
@@ -108,19 +114,24 @@ class SrcFix [singleton]
       if (cur_directive != "") add_directive( cur_directive, lines )
 
     method add_directive( name:String, lines:String[] )
+      which (name)
+        case "[delete all]": name = "[deleteAll]"
+        case "[replace all]": name = "[replaceAll]"
+      endWhich
       local type = TypeInfo[ name.unleft(1).unright(1).capitalized+"Directive" ]
       directives.add( type.create_object<<Directive>>.[ init(name,lines) ] )
 
     method begins_with_directive( line:String )->Logical
       if (not line.begins_with('[')) return false
       if (line.begins_with("[after]")) return true
-      if (line.begins_with("[append]")) return true
       if (line.begins_with("[before]")) return true
+      if (line.begins_with("[search]")) return true
+      if (line.begins_with("[append]")) return true
       if (line.begins_with("[delete]")) return true
+      if (line.begins_with("[delete all]")) return true
       if (line.begins_with("[insert]")) return true
       if (line.begins_with("[replace]")) return true
-      if (line.begins_with("[reset]")) return true
-      if (line.begins_with("[search]")) return true
+      if (line.begins_with("[replace all]")) return true
       return false
 
     method parse_args( args:String[] )->Value
@@ -136,54 +147,65 @@ class SrcFix [singleton]
       println "$ by Brom Bresenham"(DATE)
       println
 
-      println @|USAGE
-               |  srcfix [OPTIONS]
-               |
-               |OPTIONS
-               |  --file=<filepath>, -f <filepath>
-               |    Read search-and-replace directives from the specified file instead of
-               |    interactively.
-               |
-               |  --help, -h, -?
-               |    Show this help text.
-               |
-               |DIRECTIVES
-               |  The following search-and-replace directives are used by SrcFix. Each can be
-               |  followed by any number of lines of arbitrary text. These directives will be
-               |  applied to each file specified on the command line.
-               |
-               |  [after]
-               |    Move the start of the search-and-replace window and the insertion point to
-               |    be just after the lines following the [after] directive. Multiple [after]
-               |    and [before] directives will further narrow the window.
-               |
-               |  [append]
-               |    Appends the lines that follow the [inset] directive to the end of the
-               |    current search-and-replace window.
-               |
-               |  [before]
-               |    Move the end of the search-and-replace window and the insertion point to be
-               |    just before the lines following the [before] directive. Multiple [after] and
-               |    [before] directives will further narrow the window.
-               |
-               |  [delete]
-               |    Deletes all lines within the current search-and-replace window.
-               |
-               |  [insert]
-               |    Inserts the lines that follow the [inset] directive at the current insertion
-               |    point.
-               |
-               |  [replace]
-               |    Replaces the contents of the current search-and-replace window with the
-               |    lines that follow the [replace] directive.
-               |
-               |  [reset]
-               |    Resets the search-and-replace window to cover the full content of the
-               |    current file.
-               |
-               |  [search]
-               |    Narrows the search-and-replace window to enclose the first occurrence of the
-               |    lines that follow the [search] directive.
+      local text =
+        @|USAGE
+         |  srcfix [OPTIONS]
+         |
+         |OPTIONS
+         |  --file=<filepath>, -f <filepath>
+         |    Read search-and-replace directives from the specified file instead of
+         |    interactively.
+         |
+         |  --help, -h, -?
+         |    Show this help text.
+         |
+         |DIRECTIVES
+         |  The following search-and-replace directives are used by SrcFix. Each can be
+         |  followed by any number of lines of arbitrary text. These directives will be
+         |  applied in order to each file specified on the command line.
+         |
+         |  SEARCH DIRECTIVES
+         |    The search-and-replace window begins covering the entire file's content. The
+         |    following directives refine the window. [after] and [before] can be used
+         |    multiple times with cumulative effect. The search window is reset to cover full
+         |    file content after each modification directive.
+         |
+         |    [after]
+         |      Move the start of the search-and-replace window to be just after the lines
+         |      following the [after] directive.
+         |
+         |    [before]
+         |      Move the end of the search-and-replace window to be just before the lines
+         |     following the [before] directive.
+         |
+         |    [search]
+         |      Narrows the search-and-replace window to enclose the first occurrence of the
+         |      lines that follow the [search] directive.
+         |
+         |  MODIFICATION DIRECTIVES
+         |    [all]
+         |      Repeats all previous directives until there are no more changes. Only works
+         |      with
+         |
+         |    [append]
+         |      Appends the lines that follow the [append] directive to the end of the
+         |      current search-and-replace window.
+         |
+         |    [delete], [delete all]
+         |      [delete] deletes all lines within the current search-and-replace window.
+         |      [delete all] deletes and then repeats the previous [search] with another
+         |      delete as long as the [search] succeeds.
+         |
+         |    [insert]
+         |      Inserts the lines that follow the [insert] directive at the beginning of
+         |      the current search-and-replace window.
+         |
+         |    [replace], [replace all]
+         |      [replace] replaces the contents of the current search-and-replace window with the
+         |      lines that follow the [replace] directive. [replace all]
+         |      repeats the previous [search] paired with a [replace] as long as the [search]
+         |      succeeds.
+    println TextDocFormatter().format( text )
 endClass
 
 class Directive [essential abstract]
@@ -213,7 +235,7 @@ class Directive [essential abstract]
         endIf
       endIf
 
-    method apply->Logical [abstract]
+    method apply( &quiet )->Logical [abstract]
 
     method format( line:String )->String
       line .= trimmed
@@ -264,8 +286,8 @@ endClass
 
 class AfterDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
 
       local i1 = locate
       if (i1)
@@ -278,8 +300,8 @@ endClass
 
 class AppendDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
       local base_indent = ""
       if (SrcFix.patcher.lines.count)
         local old_line = SrcFix.patcher.lines[ SrcFix.last_line ]
@@ -292,7 +314,6 @@ class AppendDirective : Directive [essential]
       endIf
 
       forEach (line in lines)
-        #println "+ $"(format(line))
         SrcFix.patcher.lines.insert( base_indent+line, SrcFix.last_line )
         SrcFix.patcher.is_modified = true
         ++SrcFix.last_line
@@ -305,8 +326,8 @@ endClass
 
 class BeforeDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
 
       local i1 = locate
       if (i1)
@@ -319,12 +340,11 @@ endClass
 
 class DeleteDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
 
       local i1 = SrcFix.first_line
       forEach (i in i1..SrcFix.last_line)
-        #println "- $"(format(SrcFix.patcher.lines[i1]))
         SrcFix.patcher.delete(i1)
       endForEach
 
@@ -336,10 +356,26 @@ class DeleteDirective : Directive [essential]
       return true
 endClass
 
+class DeleteAllDirective : DeleteDirective [essential]
+  METHODS
+    method init( name:String, lines:String[] )
+      prior.init( "[delete all]", lines )
+
+    method apply( &quiet )->Logical
+      prior.apply( &=quiet )
+
+      while (SrcFix.previous_search and SrcFix.previous_search.apply( &quiet ))
+        prior.apply( &quiet )
+      endWhile
+      SrcFix.previous_search = null
+
+      return true
+endClass
+
 class InsertDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
 
       local base_indent = ""
       if (SrcFix.patcher.lines.count)
@@ -353,7 +389,6 @@ class InsertDirective : Directive [essential]
       endIf
 
       forEach (line in lines)
-        #println "+ $"(format(line))
         SrcFix.patcher.lines.insert( base_indent+line, SrcFix.first_line )
         SrcFix.patcher.is_modified = true
         ++SrcFix.first_line
@@ -366,8 +401,8 @@ endClass
 
 class ReplaceDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
 
       local old_line = SrcFix.patcher.lines[ SrcFix.first_line ]
       local n = 0
@@ -379,12 +414,10 @@ class ReplaceDirective : Directive [essential]
 
       local i1 = SrcFix.first_line
       forEach (i in i1..SrcFix.last_line)
-        #println "- $"(format(SrcFix.patcher.lines[i1]))
         SrcFix.patcher.delete(i1)
       endForEach
 
       forEach (line in lines)
-        #println "+ $"(format(line))
         SrcFix.patcher.lines.insert( base_indent+line, SrcFix.first_line )
         ++SrcFix.first_line
       endForEach
@@ -394,21 +427,27 @@ class ReplaceDirective : Directive [essential]
       return true
 endClass
 
-class ResetDirective : Directive [essential]
+class ReplaceAllDirective : ReplaceDirective [essential]
   METHODS
-    method apply->Logical
-      println this
-      reset
-      return true
+    method init( name:String, lines:String[] )
+      prior.init( "[replace all]", lines )
 
-    method require_empty->Logical
+    method apply( &quiet )->Logical
+      prior.apply( &=quiet )
+
+      while (SrcFix.previous_search and SrcFix.previous_search.apply( &quiet ))
+        prior.apply( &quiet )
+      endWhile
+      SrcFix.previous_search = null
+
       return true
 endClass
 
 class SearchDirective : Directive [essential]
   METHODS
-    method apply->Logical
-      println this
+    method apply( &quiet )->Logical
+      if (not quiet) println "  " + this
+      SrcFix.previous_search = this
 
       local i1 = locate
       if (i1)
