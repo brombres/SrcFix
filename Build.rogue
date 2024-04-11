@@ -293,6 +293,7 @@ routine rogo_publish( new_version:String )
   if (not Console.input("Continue publishing release to GitHub? ").to_lowercase.begins_with('y')) return
 
   execute ''gh release create v$ --title "v$" --notes ""''(new_version,new_version)
+  execute "git pull"  # pull new tag
 endRoutine
 
 routine compile_rogue
@@ -558,7 +559,7 @@ class Build [singleton]
           if (line.contains("="))
             local name  = line.before_first('=').trimmed
             local rhs   = line.after_first('=').trimmed
-            local value : Value
+            local value : Variant
             if (rhs.begins_with('"') or rhs.begins_with('\''))
               value = rhs.leftmost(-1).rightmost(-1)
             elseIf (rhs.begins_with('{') or rhs.begins_with('['))
@@ -575,7 +576,7 @@ class Build [singleton]
         endForEach
       endIf
 
-    method _join( value:Value )->String
+    method _join( value:Variant )->String
       local args = String[]
       args.add( forEach in value )
       return args.join( "_" )

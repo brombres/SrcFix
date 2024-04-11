@@ -20,14 +20,36 @@ catch (error:Error)
   System.exit 1
 endTry
 
+
+augment Rogue::String
+  # Patch in this method for RogueC < 2.32
+  METHODS
+    method extract_indentation->String
+      # Returns a string consisting of this string's leading spaces and tabs.
+      local n = 0
+      forEach (ch in this)
+        if (ch == ' ' or ch == '\t') ++n
+        else                         escapeForEach
+      endForEach
+
+      which (n)
+        case 0
+          return ""
+        case count
+          return this
+        others
+          return leftmost(n)
+      endWhich
+endAugment
+
 class SrcFix [singleton]
   PROPERTIES
-    command    : Value
+    command    : Variant
     directives = Directive[]
 
     patcher    : FilePatcher
-    first_line : Int32
-    last_line  : Int32
+    first_line : Int
+    last_line  : Int
 
     previous_search : Directive
 
@@ -134,7 +156,7 @@ class SrcFix [singleton]
       if (line.begins_with("[replace all]")) return true
       return false
 
-    method parse_args( args:String[] )->Value
+    method parse_args( args:String[] )->Variant
       local command = CommandLineParser().
       [
         option( "--file=", &alias="-f" )
@@ -241,7 +263,7 @@ class Directive [essential abstract]
       if (line.count <= 70) return line
       return line.substring(0,67) + "..."
 
-    method locate->Int32?
+    method locate->Int?
       local i1 = SrcFix.first_line
       local i2 = (SrcFix.last_line - lines.count) + 1
       forEach (i in i1..i2)
@@ -249,7 +271,7 @@ class Directive [essential abstract]
       endForEach
       return null
 
-    method match_lines_at( index:Int32 )->Logical
+    method match_lines_at( index:Int )->Logical
       if (index < 0) return false
       local limit = index + lines.count
       if (limit > SrcFix.patcher.lines.count) return false
@@ -303,13 +325,8 @@ class AppendDirective : Directive [essential]
       if (not quiet) println "  " + this
       local base_indent = ""
       if (SrcFix.patcher.lines.count)
-        local old_line = SrcFix.patcher.lines[ SrcFix.last_line ]
-        local n = 0
-        forEach (ch in old_line)
-          if (ch == ' ' or ch == '\t') ++n
-          else                         escapeForEach
-        endForEach
-        base_indent = old_line.substring(0,n)
+        base_indent = SrcFix.patcher.lines[ SrcFix.last_line ].extract_indentation
+        if (lines.count and lines.first.extract_indentation == base_indent) base_indent = ""
       endIf
 
       forEach (line in lines)
@@ -378,13 +395,8 @@ class InsertDirective : Directive [essential]
 
       local base_indent = ""
       if (SrcFix.patcher.lines.count)
-        local old_line = SrcFix.patcher.lines[ (SrcFix.first_line-1).clamped_low(0) ]
-        local n = 0
-        forEach (ch in old_line)
-          if (ch == ' ' or ch == '\t') ++n
-          else                         escapeForEach
-        endForEach
-        base_indent = old_line.substring(0,n)
+        base_indent = SrcFix.patcher.lines[ (SrcFix.first_line-1).clamped_low(0) ].extract_indentation
+        if (lines.count and lines.first.extract_indentation == base_indent) base_indent = ""
       endIf
 
       forEach (line in lines)
@@ -403,13 +415,11 @@ class ReplaceDirective : Directive [essential]
     method apply( &quiet )->Logical
       if (not quiet) println "  " + this
 
-      local old_line = SrcFix.patcher.lines[ SrcFix.first_line ]
-      local n = 0
-      forEach (ch in old_line)
-        if (ch == ' ' or ch == '\t') ++n
-        else                         escapeForEach
-      endForEach
-      local base_indent = old_line.substring(0,n)
+      local base_indent = ""
+      if (SrcFix.patcher.lines.count)
+        base_indent = SrcFix.patcher.lines[ SrcFix.first_line ].extract_indentation
+        if (lines.count and lines.first.extract_indentation == base_indent) base_indent = ""
+      endIf
 
       local i1 = SrcFix.first_line
       forEach (i in i1..SrcFix.last_line)
